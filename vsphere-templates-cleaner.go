@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"fmt"
@@ -22,6 +24,12 @@ type config struct {
 	password string
 	datacenter string
 	insecureFlag bool
+}
+
+
+type VM interface {
+	Name() string
+	Destroy(ctx context.Context) (*object.Task, error)
 }
 
 // getEnvString returns string from environment variable.
@@ -76,19 +84,44 @@ func getConfig() config {
 }
 
 //var imagePath = flag.String("image-path", "", "image path in folder view")
-var imageName = flag.String("image-name", "", "image name")
+//var imageName = flag.String("image-name", "", "image name")
+var regex = flag.String("regex", "-([\\.0-9]+)$", "image name regex")
 var keep = flag.Int("keep", 3, "keep last n images")
 var dryRun = flag.Bool("dry-run", true, "Don't actually run clean")
 
+type template struct {
+	version int
+	name string
+	ref VM
+}
+
+type templateList []*template
+
+func (tl *templateList) toString() string {
+	output := "["
+	for i, t := range *tl {
+		if i == len(*tl) - 1 {
+			output += t.name
+		} else {
+			output += t.name + ", "
+		}
+	}
+	output += "]"
+	return output
+}
+
+func (t *template) toString() string {
+	return t.name
+}
 
 func main() {
 	flag.Parse()
-	//if *imagePath == "" {
-	//	log.Fatal("Please specify image-path")
-	//}
-	if *imageName == "" {
-		log.Fatal("Please specify image-name")
-	}
+
+	var templates templateList
+
+	re := regexp.MustCompile(*regex)
+	log.Printf("Using regexp: %s", re.String())
+
 	ctx := context.Background()
 	c := getConfig()
 	client, err := NewClient(ctx, c.host, c.username, c.password, c.insecureFlag)
@@ -115,44 +148,46 @@ func main() {
 		log.Fatal(err)
 	}
 
-	templates := filterVMsByPrefix(items, *imageName)
+	var temp *template
+	for _, t := range items {
+		temp = getTemplate(re, t)
+		if temp != nil {
+			templates = append(templates, temp)
+		}
+	}
 
-	names := []string{}
-	for _, i := range templates  {
-		names = append(names, i.Name())
-	}
-	sort.Strings(names)
-	if len(names) <= *keep {
-		log.Printf("Next machines found: %v, keep: %v, nothing to do.", names, *keep)
-		return
-	}
-	deleted := names[:len(names) - *keep]
-	kept := names[len(names) - *keep:]
-	log.Printf("Next machines seleced for deletion %v", deleted)
-	log.Printf("Next machines will be kept %v", kept)
+	sort.Sort(byVersion(templates))
+	deleted := templates[:len(templates) - *keep]
+	kept := templates[len(templates) - *keep:]
+	log.Printf("Next machines seleced for deletion %s", deleted.toString())
+	log.Printf("Next machines will be kept %s", kept.toString())
 	if !*dryRun {
 		for _, d := range deleted {
-			for _, t := range templates {
-				if t.Name() == d {
-					log.Printf("Deleting virtual machine '%s'", d)
-					_, err := t.Destroy(ctx)
-					if err != nil {
-						log.Println(err)
-					}
-				}
+			log.Printf("Deleting virtual machine '%s'", d.name)
+			_, err := d.ref.Destroy(ctx)
+			if err != nil {
+				log.Printf("During deleting of %s, error occue, %s", d.name, err)
 			}
 		}
 	}
 }
 
-func filterVMsByPrefix(vms []*object.VirtualMachine, prefix string) []*object.VirtualMachine{
-	images := []*object.VirtualMachine{}
-	for _, f := range vms {
-		if strings.HasPrefix(f.Name(), *imageName) {
-			images = append(images, f)
-		}
+func getTemplate(re *regexp.Regexp, machine VM) *template {
+	ver := re.FindStringSubmatch(machine.Name())
+	if len(ver) <= 1 {
+		return nil
 	}
-	return images
+	t := &template{
+		ref: machine,
+		name: machine.Name(),
+		version: 0,
+	}
+
+	i, err := strconv.Atoi(ver[len(ver)-1])
+	if err == nil {
+		t.version = i
+	}
+	return t
 }
 
 func NewClient(ctx context.Context, host string, username string, password string, insecureFlag bool) (*govmomi.Client, error){
@@ -162,4 +197,16 @@ func NewClient(ctx context.Context, host string, username string, password strin
 		return nil, err
 	}
 	return govmomi.NewClient(ctx, u, insecureFlag)
+}
+
+type byVersion []*template
+
+func (s byVersion) Len() int {
+	return len(s)
+}
+func (s byVersion) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}
+func (s byVersion) Less(i, j int) bool {
+	return s[i].version < s[j].version
 }
