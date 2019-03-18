@@ -83,7 +83,7 @@ func getConfig() config {
 	return c
 }
 
-//var imagePath = flag.String("image-path", "", "image path in folder view")
+var imagePath = flag.String("image-path", "*", "image path in folder view")
 //var imageName = flag.String("image-name", "", "image name")
 var regex = flag.String("regex", "-([\\.0-9]+)$", "image name regex")
 var keep = flag.Int("keep", 3, "keep last n images")
@@ -142,8 +142,7 @@ func main() {
 		log.Fatal(err)
 	}
 	finder.SetDatacenter(datacenter)
-
-	items, err := finder.VirtualMachineList(ctx, "*")
+	items, err := finder.VirtualMachineList(ctx, *imagePath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -157,10 +156,16 @@ func main() {
 	}
 
 	sort.Sort(byVersion(templates))
-	deleted := templates[:len(templates) - *keep]
-	kept := templates[len(templates) - *keep:]
-	log.Printf("Next machines seleced for deletion %s", deleted.toString())
-	log.Printf("Next machines will be kept %s", kept.toString())
+	var deleted templateList
+	var kept templateList
+	if len(templates) > *keep {
+		deleted = templates[:len(templates)-*keep]
+		kept = templates[len(templates)-*keep:]
+	} else {
+		kept = templates
+	}
+	log.Printf("Next machines selected for deletion: %s", deleted.toString())
+	log.Printf("Next machines will be kept: %s", kept.toString())
 	if !*dryRun {
 		for _, d := range deleted {
 			log.Printf("Deleting virtual machine '%s'", d.name)
